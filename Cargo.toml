@@ -1,0 +1,9 @@
+[package]
+name = "vulkano_boids_simulation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vulkano = "0.35.2"
+winit = { version = "0.30.12", features = [ "rwh_06" ]}
+
