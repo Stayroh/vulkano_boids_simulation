@@ -1,0 +1,29 @@
+#version 460
+
+// Define the structure of a vertex (e.g., position as vec3)
+struct Boid {
+    vec3 position;
+    vec3 direction;
+};
+
+// The buffer containing the vertices
+layout(std430, binding = 0) buffer Boids {
+    Boid boids[];
+};
+layout(push_constant) uniform PushConstants {
+    float deltaTime;
+} pc;
+
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    float deltaTime = pc.deltaTime;
+
+
+    // Read the position
+    Boid boid = boids[idx];
+    // Write the same position back
+    boids[idx].position = boid.position + vec3(0.0, 0.1 * deltaTime, 0.0);
+}
