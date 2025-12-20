@@ -1,4 +1,4 @@
-#version 460
+#version 450
 
 // Define the structure of a vertex (e.g., position as vec3)
 struct Boid {
@@ -7,7 +7,7 @@ struct Boid {
 };
 
 // The buffer containing the vertices
-layout(std430, binding = 0) buffer Boids {
+layout(std430, set = 0, binding = 0) buffer Boids {
     Boid boids[];
 };
 layout(push_constant) uniform PushConstants {
