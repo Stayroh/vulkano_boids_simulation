@@ -20,6 +20,9 @@ mod cs {
     }
 }
 
+mod camera_controller;
+use camera_controller::{CameraController, CameraState};
+
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use rand::Rng;
@@ -59,7 +62,7 @@ struct Boid {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
-struct PushConstants {
+struct ComputePushConstants {
     delta_time: f32,
     radius_squared: f32,
     separation_scale: f32,
@@ -68,6 +71,9 @@ struct PushConstants {
     max_speed: f32,
     num_elements: u32,
 }
+
+
+
 
 const NUM_BOIDS: usize = 1_000_000;
 
@@ -139,6 +145,7 @@ struct GraphicsContext {
         Arc<vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator>,
     command_buffer_allocator:
         Arc<vulkano::command_buffer::allocator::StandardCommandBufferAllocator>,
+    camera_controller: CameraController,
 }
 
 impl GraphicsContext {
@@ -159,7 +166,7 @@ impl GraphicsContext {
             vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
         ).context("Failed to create command buffer builder")?;
 
-        let push_constants = PushConstants {
+        let push_constants = ComputePushConstants {
             delta_time,
             radius_squared: 0.1,
             separation_scale: 1.5,
@@ -319,6 +326,15 @@ impl GraphicsContext {
         )
         .context("Failed to create swapchain")?;
 
+        let camera_controller = CameraController::new(
+            70.0_f32.to_radians(),
+            1.0,
+            0.01,
+            100.0
+        );
+        camera_controller.set_position([1.0, 1.0, -4.0]);
+        camera_controller.look_at([0.0, 0.0, 0.0]);
+
         let boid_iter = BoidIter::new(NUM_BOIDS);
 
         let boids_ssbo = Buffer::from_iter(
@@ -335,6 +351,20 @@ impl GraphicsContext {
             boid_iter,
         )
         .context("Failed to create Boids Buffer")?;
+
+        let camera_buffer = Buffer::from_data(
+            memory_allocator.clone(),
+            vulkano::buffer::BufferCreateInfo {
+                usage: vulkano::buffer::BufferUsage::UNIFORM_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            camera_controller.get_state(),
+        ).context("Failed to create camera buffer")?;
 
         let compute_pipeline = {
             let cs_module = cs::load(device.clone()).context("Failed to load compute shader")?;
@@ -360,6 +390,8 @@ impl GraphicsContext {
             )
             .context("Failed to create compute pipeline")?
         };
+
+        let graphics_pipeline = {}
 
         let descriptor_set_allocator = Arc::new(
             vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator::new(
@@ -389,6 +421,7 @@ impl GraphicsContext {
             boids_ssbo,
             descriptor_set_allocator,
             command_buffer_allocator,
+            camera_controller
         })
     }
 }
