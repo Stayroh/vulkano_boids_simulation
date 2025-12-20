@@ -3,7 +3,7 @@
 // Define the structure of a vertex (e.g., position as vec3)
 struct Boid {
     vec3 position;
-    vec3 direction;
+    vec3 velocity;
 };
 
 // The buffer containing the vertices
@@ -12,6 +12,12 @@ layout(std430, binding = 0) buffer Boids {
 };
 layout(push_constant) uniform PushConstants {
     float deltaTime;
+    float radius_squared;
+    float separation_scale;
+    float alignment_scale;
+    float cohesion_scale;
+    float maxSpeed;
+    uint num_elements;
 } pc;
 
 
@@ -19,11 +25,50 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    float deltaTime = pc.deltaTime;
 
-
-    // Read the position
     Boid boid = boids[idx];
-    // Write the same position back
-    boids[idx].position = boid.position + vec3(0.0, 0.1 * deltaTime, 0.0);
+
+    vec3 separation = vec3(0.0, 0.0, 0.0);
+    vec3 alignment = vec3(0.0, 0.0, 0.0);
+    vec3 cohesion = vec3(0.0, 0.0, 0.0);
+
+    uint n = 0;
+
+    for (int i = 0; i < pc.num_elements; i++) {
+        if (i == idx) continue;
+        Boid other = boids[i];
+        vec3 delta_position = other.position - boid.position;
+        float dist2 = dot(delta_position, delta_position);
+        if (dist2 > pc.radius_squared) continue;
+        cohesion += other.position;
+        separation -= delta_position / (dist2 + 0.001);
+        alignment += other.velocity;
+        n++;
+    }
+
+    if (n > 0) {
+        cohesion /= n;
+        alignment /= n;
+        cohesion -= boid.position;
+        alignment -= boid.velocity;
+    } else {
+        cohesion = vec3(0.0);
+        alignment = vec3(0.0);
+    }
+
+
+
+
+    vec3 total_force = separation * pc.separation_scale + alignment * pc.alignment_scale + cohesion * pc.cohesion_scale;
+
+    vec3 new_velocity = boid.velocity + total_force * pc.deltaTime;
+    float speed = length(new_velocity);
+    if (speed > pc.maxSpeed) new_velocity = normalize(new_velocity) * pc.maxSpeed;
+    vec3 new_position = boid.position + new_velocity * pc.deltaTime;
+
+
+
+    boid.position = new_position;
+    boid.velocity = new_velocity;
+    boids[idx] = boid;
 }
