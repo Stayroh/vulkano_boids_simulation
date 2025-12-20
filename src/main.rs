@@ -24,6 +24,7 @@ use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use rand::Rng;
 use std::sync::Arc;
+use vulkano::sync::GpuFuture;
 use vulkano::{
     buffer::{Buffer, BufferContents, Subbuffer},
     command_buffer,
@@ -68,7 +69,7 @@ struct PushConstants {
     num_elements: u32,
 }
 
-const NUM_BOIDS: usize = 1_000;
+const NUM_BOIDS: usize = 1_000_000;
 
 struct BoidIter {
     remaining: usize,
@@ -141,6 +142,65 @@ struct GraphicsContext {
 }
 
 impl GraphicsContext {
+    fn update(&mut self, delta_time: f32) -> Result<()> {
+
+        let layout = self.compute_pipeline.layout().set_layouts().get(0).context("No descriptor set layout found")?;
+
+        let descriptor_set = vulkano::descriptor_set::DescriptorSet::new(
+            self.descriptor_set_allocator.clone(),
+            layout.clone(),
+            [vulkano::descriptor_set::WriteDescriptorSet::buffer(0, self.boids_ssbo.clone())],
+            [],
+        ).context("Failed to create descriptor set")?;
+
+        let mut builder = vulkano::command_buffer::AutoCommandBufferBuilder::primary(
+            self.command_buffer_allocator.clone(),
+            self.compute_queue.queue_family_index(),
+            vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
+        ).context("Failed to create command buffer builder")?;
+
+        let push_constants = PushConstants {
+            delta_time,
+            radius_squared: 0.1,
+            separation_scale: 1.5,
+            alignment_scale: 1.0,
+            cohesion_scale: 1.0,
+            max_speed: 0.1,
+            num_elements: NUM_BOIDS as u32,
+        };
+
+        builder
+            .bind_pipeline_compute(self.compute_pipeline.clone())
+            .context("Failed to bind compute pipeline to command buffer")?
+            .bind_descriptor_sets(
+                vulkano::pipeline::PipelineBindPoint::Compute,
+                self.compute_pipeline.layout().clone(),
+                0,
+                descriptor_set,
+            )
+            .context("Failed to bind descriptor set to command buffer")?
+            .push_constants(self.compute_pipeline.layout().clone(), 0, push_constants)
+            .context("Failed to push constants to command buffer")?;
+
+        unsafe {
+            builder
+                .dispatch([NUM_BOIDS as u32 / 64 + 1, 1, 1])
+                .context("Failed to dispatch compute shader")?;
+        }
+
+        let command_buffer = builder.build().context("Failed to build command buffer")?;
+
+        let future = vulkano::sync::now(self.device.clone())
+            .then_execute(self.compute_queue.clone(), command_buffer)
+            .context("Failed to execute command buffer")?
+            .then_signal_fence_and_flush()
+            .context("Failed to signal fence and flush")?;
+
+        future.wait(None).context("Failed to wait for compute shader execution")?;
+
+        Ok(())
+    }
+
     fn new(
         window: Arc<Window>,
         required_extensions: vulkano::instance::InstanceExtensions,
@@ -379,86 +439,20 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                // Draw the triangle using Vulkan
-                if let Some(gc) = &self.graphics_context {
-                    use vulkano::command_buffer::{
-                        AutoCommandBufferBuilder, CommandBufferUsage, SubpassContents,
-                    };
-                    use vulkano::image::SwapchainImage;
-                    use vulkano::swapchain::{
-                        AcquireError, SwapchainAcquireFuture, SwapchainPresentInfo,
-                    };
-                    use vulkano::sync::FlushError;
-                    use vulkano::sync::{self, GpuFuture};
+                println!("Redraw requested");
+                if let Some(graphics_context) = &mut self.graphics_context {
+                    let delta_time = 0.016; // Placeholder for ~60 FPS
 
-                    let queue = gc.queues[0].clone();
-                    let swapchain = gc.swapchain.clone();
-                    let images = &gc.swapchain_images;
-
-                    let (image_index, suboptimal, acquire_future) =
-                        match vulkano::swapchain::acquire_next_image(swapchain.clone(), None) {
-                            Ok(r) => r,
-                            Err(AcquireError::OutOfDate) => {
-                                // Normally, recreate swapchain here
-                                return;
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to acquire next image: {e}");
-                                return;
-                            }
-                        };
-
-                    let clear_values = vec![[0.0, 0.0, 0.0, 1.0].into()];
-
-                    let mut builder = AutoCommandBufferBuilder::primary(
-                        gc.device.clone(),
-                        queue.family(),
-                        CommandBufferUsage::OneTimeSubmit,
-                    )
-                    .unwrap();
-
-                    builder
-                        .begin_render_pass(
-                            gc.pipeline.render_pass().clone(),
-                            &images[image_index],
-                            SubpassContents::Inline,
-                            clear_values,
-                        )
-                        .unwrap()
-                        .bind_pipeline_graphics(gc.pipeline.clone())
-                        .bind_vertex_buffers(0, gc.vertex_buffer.clone())
-                        .draw(3, 1, 0, 0)
-                        .unwrap()
-                        .end_render_pass()
-                        .unwrap();
-
-                    let command_buffer = builder.build().unwrap();
-
-                    let future = acquire_future
-                        .then_execute(queue.clone(), command_buffer)
-                        .unwrap()
-                        .then_swapchain_present(
-                            queue.clone(),
-                            SwapchainPresentInfo::swapchain_image_index(
-                                swapchain.clone(),
-                                image_index,
-                            ),
-                        )
-                        .then_signal_fence_and_flush();
-
-                    match future {
-                        Ok(future) => {
-                            // Wait for the GPU to finish
-                            let _ = future.wait(None);
-                        }
-                        Err(FlushError::OutOfDate) => {
-                            // Normally, recreate swapchain here
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to flush future: {e}");
-                        }
+                    if let Err(e) = graphics_context.update(delta_time) {
+                        self.error = Some(e);
+                        event_loop.exit();
+                        return;
                     }
+                } else {
+                    self.error = Some(anyhow::anyhow!("Graphics context not initialized"));
+                    event_loop.exit();
                 }
+
                 // Request another redraw for continuous rendering
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -474,7 +468,7 @@ impl ApplicationHandler for App {
 
 fn main() {
     if let Err(e) = run() {
-        let error_message = format!("{e:#}"); // {:#} shows the full error chain
+        let error_message = format!("{e:#}");
         eprintln!("Error: {error_message}");
 
         rfd::MessageDialog::new()
