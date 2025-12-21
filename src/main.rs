@@ -26,6 +26,8 @@ use camera_controller::{CameraController, CameraState};
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use rand::Rng;
+use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
+use vulkano::pipeline::graphics::vertex_input::VertexInputState;
 use vulkano::pipeline::layout::PipelineLayoutCreateInfo;
 use vulkano::pipeline::{PipelineCreateFlags, PipelineLayout};
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
@@ -33,6 +35,7 @@ use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::viewport::ViewportState;
+use vulkano::render_pass::Subpass;
 use std::sync::Arc;
 use vulkano::sync::GpuFuture;
 use vulkano::{
@@ -83,7 +86,7 @@ struct ComputePushConstants {
 
 
 
-const NUM_BOIDS: usize = 1_000_000;
+const NUM_BOIDS: usize = 1_000;
 
 struct BoidIter {
     remaining: usize,
@@ -155,7 +158,7 @@ struct GraphicsContext {
         Arc<vulkano::command_buffer::allocator::StandardCommandBufferAllocator>,
     camera_controller: CameraController,
     camera_buffer: Subbuffer<CameraState>,
-    //graphics_pipeline: Arc<GraphicsPipeline>,
+    graphics_pipeline: Arc<GraphicsPipeline>,
 }
 
 impl GraphicsContext {
@@ -403,7 +406,22 @@ impl GraphicsContext {
             .context("Failed to create compute pipeline")?
         };
 
-        /*
+        let render_pass = vulkano::single_pass_renderpass!(
+            device.clone(),
+            attachments: {
+                color: {
+                    format: swapchain.image_format(),
+                    samples: 1,
+                    load_op: Clear,
+                    store_op: Store,
+                },
+            },
+            pass: {
+                color: [color],
+                depth_stencil: {}
+            },
+        ).context("Failed to create render pass")?;
+
         let graphics_pipeline = {
             
             let vs_module = vs::load(device.clone()).context("Failed to load vertex shader")?;
@@ -421,7 +439,7 @@ impl GraphicsContext {
                     .context("Error in fragment shader entry point")?,
             );
 
-            let stages = smallvec::smallvec![vertex_stage, fragment_stage];
+            let stages = [vertex_stage, fragment_stage];
 
             let layout = PipelineLayout::new(
                 device.clone(),
@@ -431,17 +449,23 @@ impl GraphicsContext {
             )
             .context("Failed to create pipeline layout")?;
 
-            
+            let subpass = Subpass::from(render_pass.clone(), 0).context("Failed to crete subpass")?;
+
             let graphics_pipeline_create_info = GraphicsPipelineCreateInfo {
                 flags: PipelineCreateFlags::empty(),
-                stages: stages,
-                vertex_input_state: None,
+                stages: stages.into_iter().collect(),
+                vertex_input_state: Some(VertexInputState::default()),
                 input_assembly_state: Some(InputAssemblyState::default()),
                 tessellation_state: None,
                 viewport_state: Some(ViewportState::default()),
                 rasterization_state: Some(RasterizationState::default()),
                 multisample_state: Some(MultisampleState::default()),
-
+                color_blend_state: Some(ColorBlendState::with_attachment_states(
+                    subpass.num_color_attachments(),
+                    ColorBlendAttachmentState::default(),
+                )),
+                subpass: Some(subpass.into()),
+                ..GraphicsPipelineCreateInfo::layout(layout)
 
             };
 
@@ -451,7 +475,7 @@ impl GraphicsContext {
                 graphics_pipeline_create_info,
             ).context("Failed to create graphics pipeline")?
         };
-        */
+
         let descriptor_set_allocator = Arc::new(
             vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator::new(
                 device.clone(),
@@ -482,7 +506,7 @@ impl GraphicsContext {
             command_buffer_allocator,
             camera_controller,
             camera_buffer,
-            //graphics_pipeline,
+            graphics_pipeline,
         })
     }
 }
