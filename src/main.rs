@@ -155,7 +155,7 @@ struct GraphicsContext {
         Arc<vulkano::command_buffer::allocator::StandardCommandBufferAllocator>,
     camera_controller: CameraController,
     camera_buffer: Subbuffer<CameraState>,
-    graphics_pipeline: Arc<GraphicsPipeline>,
+    //graphics_pipeline: Arc<GraphicsPipeline>,
 }
 
 impl GraphicsContext {
@@ -318,6 +318,8 @@ impl GraphicsContext {
             .context("No surface formats available")?
             .0;
 
+        println!("Using surface format: {:?}", image_format);
+
         let (swapchain, swapchain_images) = Swapchain::new(
             device.clone(),
             surface.clone(),
@@ -354,7 +356,7 @@ impl GraphicsContext {
                 ..Default::default()
             },
             AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
@@ -401,6 +403,7 @@ impl GraphicsContext {
             .context("Failed to create compute pipeline")?
         };
 
+        /*
         let graphics_pipeline = {
             
             let vs_module = vs::load(device.clone()).context("Failed to load vertex shader")?;
@@ -428,6 +431,7 @@ impl GraphicsContext {
             )
             .context("Failed to create pipeline layout")?;
 
+            
             let graphics_pipeline_create_info = GraphicsPipelineCreateInfo {
                 flags: PipelineCreateFlags::empty(),
                 stages: stages,
@@ -439,15 +443,15 @@ impl GraphicsContext {
                 multisample_state: Some(MultisampleState::default()),
 
 
-            }
+            };
 
             GraphicsPipeline::new(
                 device.clone(),
                 None,
-
-            )
+                graphics_pipeline_create_info,
+            ).context("Failed to create graphics pipeline")?
         };
-
+        */
         let descriptor_set_allocator = Arc::new(
             vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator::new(
                 device.clone(),
@@ -478,7 +482,7 @@ impl GraphicsContext {
             command_buffer_allocator,
             camera_controller,
             camera_buffer,
-            graphics_pipeline,
+            //graphics_pipeline,
         })
     }
 }
