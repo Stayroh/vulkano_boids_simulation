@@ -26,6 +26,13 @@ use camera_controller::{CameraController, CameraState};
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use rand::Rng;
+use vulkano::pipeline::layout::PipelineLayoutCreateInfo;
+use vulkano::pipeline::{PipelineCreateFlags, PipelineLayout};
+use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
+use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
+use vulkano::pipeline::graphics::multisample::MultisampleState;
+use vulkano::pipeline::graphics::rasterization::RasterizationState;
+use vulkano::pipeline::graphics::viewport::ViewportState;
 use std::sync::Arc;
 use vulkano::sync::GpuFuture;
 use vulkano::{
@@ -43,6 +50,7 @@ use vulkano::{
         compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo,
     },
     swapchain::{Surface, Swapchain, SwapchainCreateInfo},
+    sync::semaphore::{Semaphore, SemaphoreCreateInfo, SemaphoreType},
 };
 
 use winit::{
@@ -146,6 +154,8 @@ struct GraphicsContext {
     command_buffer_allocator:
         Arc<vulkano::command_buffer::allocator::StandardCommandBufferAllocator>,
     camera_controller: CameraController,
+    camera_buffer: Subbuffer<CameraState>,
+    graphics_pipeline: Arc<GraphicsPipeline>,
 }
 
 impl GraphicsContext {
@@ -260,7 +270,7 @@ impl GraphicsContext {
             .queue_family_properties()
             .iter()
             .enumerate()
-            .position(|(i, q)| q.queue_flags.contains(QueueFlags::COMPUTE))
+            .position(|(_i, q)| q.queue_flags.contains(QueueFlags::COMPUTE))
             .context("No suitable compute queue family found")?
             as u32;
 
@@ -326,7 +336,7 @@ impl GraphicsContext {
         )
         .context("Failed to create swapchain")?;
 
-        let camera_controller = CameraController::new(
+        let mut camera_controller = CameraController::new(
             70.0_f32.to_radians(),
             1.0,
             0.01,
@@ -391,7 +401,52 @@ impl GraphicsContext {
             .context("Failed to create compute pipeline")?
         };
 
-        let graphics_pipeline = {}
+        let graphics_pipeline = {
+            
+            let vs_module = vs::load(device.clone()).context("Failed to load vertex shader")?;
+            let fs_module = fs::load(device.clone()).context("Failed to load fragment shader")?;
+
+            let vertex_stage = PipelineShaderStageCreateInfo::new(
+                vs_module
+                    .entry_point("main")
+                    .context("Error in vertex shader entry point")?,
+            );
+            
+            let fragment_stage = PipelineShaderStageCreateInfo::new(
+                fs_module
+                    .entry_point("main")
+                    .context("Error in fragment shader entry point")?,
+            );
+
+            let stages = smallvec::smallvec![vertex_stage, fragment_stage];
+
+            let layout = PipelineLayout::new(
+                device.clone(),
+                PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                    .into_pipeline_layout_create_info(device.clone())
+                    .context("Failed to create pipeline layout info")?,
+            )
+            .context("Failed to create pipeline layout")?;
+
+            let graphics_pipeline_create_info = GraphicsPipelineCreateInfo {
+                flags: PipelineCreateFlags::empty(),
+                stages: stages,
+                vertex_input_state: None,
+                input_assembly_state: Some(InputAssemblyState::default()),
+                tessellation_state: None,
+                viewport_state: Some(ViewportState::default()),
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState::default()),
+
+
+            }
+
+            GraphicsPipeline::new(
+                device.clone(),
+                None,
+
+            )
+        };
 
         let descriptor_set_allocator = Arc::new(
             vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator::new(
@@ -421,7 +476,9 @@ impl GraphicsContext {
             boids_ssbo,
             descriptor_set_allocator,
             command_buffer_allocator,
-            camera_controller
+            camera_controller,
+            camera_buffer,
+            graphics_pipeline,
         })
     }
 }

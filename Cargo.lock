@@ -2235,6 +2235,7 @@ dependencies = [
  "bytemuck",
  "rand",
  "rfd",
+ "smallvec",
  "vulkano",
  "vulkano-shaders",
  "winit",
