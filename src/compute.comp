@@ -17,6 +17,7 @@ layout(push_constant) uniform PushConstants {
     float alignment_scale;
     float cohesion_scale;
     float maxSpeed;
+    float center_pull;
     uint num_elements;
 } pc;
 
@@ -56,10 +57,11 @@ void main() {
         alignment = vec3(0.0);
     }
 
+    vec3 center_pull = -boid.position;
 
 
 
-    vec3 total_force = separation * pc.separation_scale + alignment * pc.alignment_scale + cohesion * pc.cohesion_scale;
+    vec3 total_force = separation * pc.separation_scale + alignment * pc.alignment_scale + cohesion * pc.cohesion_scale + center_pull * pc.center_pull;
 
     vec3 new_velocity = boid.velocity + total_force * pc.deltaTime;
     float speed = length(new_velocity);

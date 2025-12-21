@@ -84,13 +84,14 @@ struct ComputePushConstants {
     alignment_scale: f32,
     cohesion_scale: f32,
     max_speed: f32,
+    center_pull: f32,
     num_elements: u32,
 }
 
 
 
 
-const NUM_BOIDS: usize = 1_000;
+const NUM_BOIDS: usize = 100_000;
 
 struct BoidIter {
     remaining: usize,
@@ -185,11 +186,12 @@ impl GraphicsContext {
 
         let push_constants = ComputePushConstants {
             delta_time,
-            radius_squared: 0.1,
-            separation_scale: 1.5,
-            alignment_scale: 1.0,
-            cohesion_scale: 1.0,
-            max_speed: 0.1,
+            radius_squared: 1.0,
+            separation_scale: 0.001,
+            alignment_scale: 2.0,
+            cohesion_scale: 10.0,
+            max_speed: 50.0,
+            center_pull: 0.1,
             num_elements: NUM_BOIDS as u32,
         };
 
@@ -214,7 +216,7 @@ impl GraphicsContext {
 
         let compute_command_buffer = compute_builder.build().context("Failed to build command buffer")?;
 
-        /*
+        
         let compute_future = vulkano::sync::now(self.device.clone())
             .then_execute(self.compute_queue.clone(), compute_command_buffer)
             .context("Failed to execute command buffer")?
@@ -223,7 +225,7 @@ impl GraphicsContext {
 
         compute_future.wait(None).context("Failed to wait for compute shader execution")?;
 
-        */
+        
 
         let (image_index, _suboptimal, acquire_future) = swapchain::acquire_next_image(self.swapchain.clone(), None)
             .context("Failed to acquire next swapchain image")?;
@@ -256,7 +258,7 @@ impl GraphicsContext {
         graphics_builder
             .begin_render_pass(
                 RenderPassBeginInfo {
-                    clear_values: vec![Some([1.0, 0.0, 0.0, 1.0].into())],
+                    clear_values: vec![Some([0.0, 0.0, 0.1, 1.0].into())],
                     ..RenderPassBeginInfo::framebuffer(
                         self.framebuffers[image_index as usize].clone()
                     )
@@ -335,6 +337,7 @@ impl GraphicsContext {
             .next()
             .context("No physical device found")?;
 
+        /*
         rfd::MessageDialog::new()
             .set_title("Vulkan Device Found")
             .set_description(&format!(
@@ -343,6 +346,7 @@ impl GraphicsContext {
             ))
             .set_level(rfd::MessageLevel::Info)
             .show();
+        */
 
         // Find a queue family that supports both graphics and presentation to our surface
         let graphics_family_index = physical_device
