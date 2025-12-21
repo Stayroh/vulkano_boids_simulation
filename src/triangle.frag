@@ -8,10 +8,12 @@ void main() {
     float dist = length(v_uv);
 
     // discard outside unit circle
+
+    /*
     if (dist > 1.0) {
         discard;
     }
-
+    */
     // inside circle → white
     f_color = vec4(1.0, 1.0, 1.0, 1.0);
 }

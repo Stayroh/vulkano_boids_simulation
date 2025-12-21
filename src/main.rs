@@ -26,18 +26,22 @@ use camera_controller::{CameraController, CameraState};
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use rand::Rng;
+use vulkano::command_buffer::{AutoCommandBufferBuilder, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents};
+use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
+use vulkano::image::view::ImageView;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
 use vulkano::pipeline::graphics::vertex_input::VertexInputState;
 use vulkano::pipeline::layout::PipelineLayoutCreateInfo;
-use vulkano::pipeline::{PipelineCreateFlags, PipelineLayout};
+use vulkano::pipeline::{PipelineBindPoint, PipelineCreateFlags, PipelineLayout};
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
-use vulkano::pipeline::graphics::rasterization::RasterizationState;
-use vulkano::pipeline::graphics::viewport::ViewportState;
-use vulkano::render_pass::Subpass;
+use vulkano::pipeline::graphics::rasterization::{CullMode, RasterizationState};
+use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
+use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, Subpass};
+use vulkano::swapchain::{self, SwapchainPresentInfo};
 use std::sync::Arc;
-use vulkano::sync::GpuFuture;
+use vulkano::sync::{GpuFuture, now};
 use vulkano::{
     buffer::{Buffer, BufferContents, Subbuffer},
     command_buffer,
@@ -149,7 +153,6 @@ struct GraphicsContext {
     graphics_queue: Arc<Queue>,
     compute_queue: Arc<Queue>,
     swapchain: Arc<Swapchain>,
-    swapchain_images: Vec<Arc<Image>>,
     compute_pipeline: Arc<ComputePipeline>,
     boids_ssbo: Subbuffer<[Boid]>,
     descriptor_set_allocator:
@@ -159,21 +162,22 @@ struct GraphicsContext {
     camera_controller: CameraController,
     camera_buffer: Subbuffer<CameraState>,
     graphics_pipeline: Arc<GraphicsPipeline>,
+    framebuffers: Vec<Arc<Framebuffer>>,
 }
 
 impl GraphicsContext {
     fn update(&mut self, delta_time: f32) -> Result<()> {
 
-        let layout = self.compute_pipeline.layout().set_layouts().get(0).context("No descriptor set layout found")?;
+        let compute_layout = self.compute_pipeline.layout().set_layouts().get(0).context("No descriptor set layout found")?;
 
-        let descriptor_set = vulkano::descriptor_set::DescriptorSet::new(
+        let compute_descriptor_set = vulkano::descriptor_set::DescriptorSet::new(
             self.descriptor_set_allocator.clone(),
-            layout.clone(),
+            compute_layout.clone(),
             [vulkano::descriptor_set::WriteDescriptorSet::buffer(0, self.boids_ssbo.clone())],
             [],
         ).context("Failed to create descriptor set")?;
 
-        let mut builder = vulkano::command_buffer::AutoCommandBufferBuilder::primary(
+        let mut compute_builder = vulkano::command_buffer::AutoCommandBufferBuilder::primary(
             self.command_buffer_allocator.clone(),
             self.compute_queue.queue_family_index(),
             vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
@@ -189,34 +193,119 @@ impl GraphicsContext {
             num_elements: NUM_BOIDS as u32,
         };
 
-        builder
+        compute_builder
             .bind_pipeline_compute(self.compute_pipeline.clone())
             .context("Failed to bind compute pipeline to command buffer")?
             .bind_descriptor_sets(
                 vulkano::pipeline::PipelineBindPoint::Compute,
                 self.compute_pipeline.layout().clone(),
                 0,
-                descriptor_set,
+                compute_descriptor_set,
             )
             .context("Failed to bind descriptor set to command buffer")?
             .push_constants(self.compute_pipeline.layout().clone(), 0, push_constants)
             .context("Failed to push constants to command buffer")?;
 
         unsafe {
-            builder
+            compute_builder
                 .dispatch([NUM_BOIDS as u32 / 64 + 1, 1, 1])
                 .context("Failed to dispatch compute shader")?;
         }
 
-        let command_buffer = builder.build().context("Failed to build command buffer")?;
+        let compute_command_buffer = compute_builder.build().context("Failed to build command buffer")?;
 
-        let future = vulkano::sync::now(self.device.clone())
-            .then_execute(self.compute_queue.clone(), command_buffer)
+        /*
+        let compute_future = vulkano::sync::now(self.device.clone())
+            .then_execute(self.compute_queue.clone(), compute_command_buffer)
             .context("Failed to execute command buffer")?
             .then_signal_fence_and_flush()
             .context("Failed to signal fence and flush")?;
 
-        future.wait(None).context("Failed to wait for compute shader execution")?;
+        compute_future.wait(None).context("Failed to wait for compute shader execution")?;
+
+        */
+
+        let (image_index, _suboptimal, acquire_future) = swapchain::acquire_next_image(self.swapchain.clone(), None)
+            .context("Failed to acquire next swapchain image")?;
+
+        let dimensions = self.framebuffers[image_index as usize].attachments()[0].image().extent();
+
+        println!("Rendering to image {} with dimensions {:?}", image_index, dimensions);
+        let actual_window_size = self.window.inner_size();
+        println!("Window size: {:?}", actual_window_size);
+
+        
+        let graphics_layout = self.graphics_pipeline.layout().set_layouts().get(0).context("No descriptor set layout found")?;
+
+        let graphics_descriptor_set = DescriptorSet::new(
+            self.descriptor_set_allocator.clone(),
+            graphics_layout.clone(),
+            [
+                WriteDescriptorSet::buffer(0, self.boids_ssbo.clone()),
+                WriteDescriptorSet::buffer(1, self.camera_buffer.clone()),
+            ],
+            [],
+        ).context("Failed to create graphics descriptor set")?;
+
+        let mut graphics_builder = AutoCommandBufferBuilder::primary(
+            self.command_buffer_allocator.clone(),
+            self.graphics_queue.queue_family_index(),
+            command_buffer::CommandBufferUsage::OneTimeSubmit,
+        ).context("Failed to create graphics auto command buffer builder")?;
+
+        graphics_builder
+            .begin_render_pass(
+                RenderPassBeginInfo {
+                    clear_values: vec![Some([1.0, 0.0, 0.0, 1.0].into())],
+                    ..RenderPassBeginInfo::framebuffer(
+                        self.framebuffers[image_index as usize].clone()
+                    )
+                },
+                SubpassBeginInfo {
+                    contents: SubpassContents::Inline,
+                    ..Default::default()
+                },
+            )
+            .context("Failed to begin render pass")?
+            .bind_pipeline_graphics(self.graphics_pipeline.clone())
+            .context("Failed to bind graphics pipeline")?
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                self.graphics_pipeline.layout().clone(),
+                0,
+                graphics_descriptor_set,
+            )
+            .context("Failed to bind graphics descriptor set")?;
+
+        unsafe {
+            graphics_builder
+                .draw(
+                    3,
+                    NUM_BOIDS as u32,
+                    0,
+                    0,
+                )
+                .context("Failed to issue draw command")?;
+        }
+
+        graphics_builder
+            .end_render_pass(Default::default())
+            .context("Failed to end render pass")?;
+
+        let graphics_command_buffer = graphics_builder.build().context("Failed to build graphics command buffer")?;
+
+        let graphics_future = now(self.device.clone())
+            .join(acquire_future)
+            .then_execute(self.graphics_queue.clone(), graphics_command_buffer)
+            .context("Failed to execute graphics command buffer")?
+            .then_swapchain_present(
+                self.graphics_queue.clone(),
+                SwapchainPresentInfo::swapchain_image_index(self.swapchain.clone(), image_index),
+            )
+            .then_signal_fence_and_flush()
+            .context("Failed to signal fence and flush for graphics")?;
+
+        graphics_future.wait(None).context("Failed to wait for graphics execution")?;
 
         Ok(())
     }
@@ -341,14 +430,16 @@ impl GraphicsContext {
         )
         .context("Failed to create swapchain")?;
 
+        println!("Created swapchain with {} images", swapchain_images.len());
+
         let mut camera_controller = CameraController::new(
             70.0_f32.to_radians(),
             1.0,
             0.01,
             100.0
         );
-        camera_controller.set_position([1.0, 1.0, -4.0]);
-        camera_controller.look_at([0.0, 0.0, 0.0]);
+        camera_controller.set_position([2.0, 2.0, -4.0]);
+        camera_controller.look_at([0.5, 0.5, 0.5]);
 
         let boid_iter = BoidIter::new(NUM_BOIDS);
 
@@ -422,6 +513,23 @@ impl GraphicsContext {
             },
         ).context("Failed to create render pass")?;
 
+        let framebuffers = swapchain_images
+            .iter()
+            .map(|image| {
+                let view = ImageView::new_default(image.clone())
+                    .context("Failed to create image view for framebuffer")?;
+                Framebuffer::new(
+                    render_pass.clone(),
+                    FramebufferCreateInfo {
+                        attachments: vec![view],
+                        ..Default::default()
+                    }
+                ).context("Failed to create framebuffer")
+            })
+            .collect::<Result<Vec<_>>>()
+            .context("Failed to create framebuffers")?;
+
+
         let graphics_pipeline = {
             
             let vs_module = vs::load(device.clone()).context("Failed to load vertex shader")?;
@@ -450,6 +558,14 @@ impl GraphicsContext {
             .context("Failed to create pipeline layout")?;
 
             let subpass = Subpass::from(render_pass.clone(), 0).context("Failed to crete subpass")?;
+            
+            let dimensions = framebuffers[0].attachments()[0].image().extent();
+
+            let viewport = Viewport {
+                    offset: [0.0, 0.0],
+                    extent: [dimensions[0] as f32, dimensions[1] as f32],
+                    depth_range: 0.0..=1.0,
+                };
 
             let graphics_pipeline_create_info = GraphicsPipelineCreateInfo {
                 flags: PipelineCreateFlags::empty(),
@@ -457,8 +573,14 @@ impl GraphicsContext {
                 vertex_input_state: Some(VertexInputState::default()),
                 input_assembly_state: Some(InputAssemblyState::default()),
                 tessellation_state: None,
-                viewport_state: Some(ViewportState::default()),
-                rasterization_state: Some(RasterizationState::default()),
+                viewport_state: Some(ViewportState {
+                    viewports: [viewport].into_iter().collect(),
+                    ..Default::default()
+                }),
+                rasterization_state: Some(RasterizationState {
+                    cull_mode: CullMode::None,
+                    ..Default::default()
+                }),
                 multisample_state: Some(MultisampleState::default()),
                 color_blend_state: Some(ColorBlendState::with_attachment_states(
                     subpass.num_color_attachments(),
@@ -499,7 +621,6 @@ impl GraphicsContext {
             graphics_queue,
             compute_queue,
             swapchain,
-            swapchain_images,
             compute_pipeline,
             boids_ssbo,
             descriptor_set_allocator,
@@ -507,6 +628,7 @@ impl GraphicsContext {
             camera_controller,
             camera_buffer,
             graphics_pipeline,
+            framebuffers
         })
     }
 }
@@ -557,7 +679,6 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                println!("Redraw requested");
                 if let Some(graphics_context) = &mut self.graphics_context {
                     let delta_time = 0.016; // Placeholder for ~60 FPS
 
