@@ -34,24 +34,9 @@ const vec2 UV[3] = vec2[](
 void main() {
     Boid b = boids[gl_InstanceIndex];
 
-    float size = 0.005; // tweak for triangle scale
+    float size = 0.05; // tweak for triangle scale
     float scale = 0.125;
     vec2 local = UV[gl_VertexIndex];
-
-    vec3 world_pos =
-        b.position +
-        camera.right * local.x * size +
-        camera.up    * local.y * size;
-
-    vec2 screen_pos = vec2(b.position);
-    /*
-    gl_Position = camera.proj * camera.view * vec4(world_pos, 1.0);
-
-    v_uv = local; // pass UV offsets to fragment shader
-    */
-
-    vec2 look_vector = normalize(vec2(b.velocity));
-    vec2 right_vector = vec2(look_vector.y, -look_vector.x);
 
 
     vec2 pos[3] = vec2[](
@@ -60,7 +45,24 @@ void main() {
         vec2( 0.0,  0.5)
     );
 
+    
+
+    gl_Position = camera.proj * camera.view * vec4(b.position, 1.0) + vec4(pos[gl_VertexIndex], 0.0, 0.0) * size;
+
+    v_uv = local; // pass UV offsets to fragment shader
+    
+
+    /*
+    vec2 screen_pos = vec2(b.position);
+
+    vec2 look_vector = normalize(vec2(b.velocity));
+    vec2 right_vector = vec2(look_vector.y, -look_vector.x);
+
+
+
+
     vec2 offset = pos[gl_VertexIndex].y * look_vector + pos[gl_VertexIndex].x * right_vector;
     gl_Position = vec4(screen_pos * scale + offset * size, 0.0, 1.0);
     v_uv = pos[gl_VertexIndex];
+    */
 }

@@ -91,7 +91,7 @@ struct ComputePushConstants {
 
 
 
-const NUM_BOIDS: usize = 100_000;
+const NUM_BOIDS: usize = 50_000;
 
 struct BoidIter {
     remaining: usize,
@@ -186,12 +186,12 @@ impl GraphicsContext {
 
         let push_constants = ComputePushConstants {
             delta_time,
-            radius_squared: 1.0,
-            separation_scale: 0.001,
-            alignment_scale: 2.0,
-            cohesion_scale: 10.0,
-            max_speed: 50.0,
-            center_pull: 0.1,
+            radius_squared: 0.1,
+            separation_scale: 0.02,
+            alignment_scale: 3.0,
+            cohesion_scale: 100.0,
+            max_speed: 500.0,
+            center_pull: 0.05,
             num_elements: NUM_BOIDS as u32,
         };
 
@@ -258,7 +258,7 @@ impl GraphicsContext {
         graphics_builder
             .begin_render_pass(
                 RenderPassBeginInfo {
-                    clear_values: vec![Some([0.0, 0.0, 0.1, 1.0].into())],
+                    clear_values: vec![Some([0.0, 0.0, 0.01, 1.0].into())],
                     ..RenderPassBeginInfo::framebuffer(
                         self.framebuffers[image_index as usize].clone()
                     )
@@ -442,8 +442,8 @@ impl GraphicsContext {
             0.01,
             100.0
         );
-        camera_controller.set_position([2.0, 2.0, -4.0]);
-        camera_controller.look_at([0.5, 0.5, 0.5]);
+        camera_controller.set_position([-15.0, 0.0, 0.0]);
+        camera_controller.look_to([-1.0, 0.0, 0.0]);
 
         let boid_iter = BoidIter::new(NUM_BOIDS);
 
