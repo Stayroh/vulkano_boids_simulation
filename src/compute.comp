@@ -57,7 +57,7 @@ void main() {
         alignment = vec3(0.0);
     }
 
-    vec3 center_pull = -boid.position;
+    vec3 center_pull = -boid.position * length(boid.position);
 
 
 

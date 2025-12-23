@@ -26,10 +26,13 @@ use camera_controller::{CameraController, CameraState};
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use rand::Rng;
-use vulkano::command_buffer::{AutoCommandBufferBuilder, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents};
+use vulkano::command_buffer::{AutoCommandBufferBuilder, ClearColorImageInfo, ClearDepthStencilImageInfo, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents};
 use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
+use vulkano::format::ClearDepthStencilValue;
+use vulkano::image::{ImageCreateInfo, ImageType};
 use vulkano::image::view::ImageView;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
+use vulkano::pipeline::graphics::depth_stencil::{DepthState, DepthStencilState};
 use vulkano::pipeline::graphics::vertex_input::VertexInputState;
 use vulkano::pipeline::layout::PipelineLayoutCreateInfo;
 use vulkano::pipeline::{PipelineBindPoint, PipelineCreateFlags, PipelineLayout};
@@ -40,6 +43,7 @@ use vulkano::pipeline::graphics::rasterization::{CullMode, RasterizationState};
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, Subpass};
 use vulkano::swapchain::{self, SwapchainPresentInfo};
+use std::default;
 use std::sync::Arc;
 use vulkano::sync::{GpuFuture, now};
 use vulkano::{
@@ -186,12 +190,12 @@ impl GraphicsContext {
 
         let push_constants = ComputePushConstants {
             delta_time,
-            radius_squared: 0.1,
-            separation_scale: 0.02,
-            alignment_scale: 3.0,
-            cohesion_scale: 100.0,
+            radius_squared: 1.5,
+            separation_scale: 0.05,
+            alignment_scale: 5.0,
+            cohesion_scale: 20.0,
             max_speed: 500.0,
-            center_pull: 0.05,
+            center_pull: 0.5,
             num_elements: NUM_BOIDS as u32,
         };
 
@@ -255,10 +259,14 @@ impl GraphicsContext {
             command_buffer::CommandBufferUsage::OneTimeSubmit,
         ).context("Failed to create graphics auto command buffer builder")?;
 
+        
         graphics_builder
             .begin_render_pass(
                 RenderPassBeginInfo {
-                    clear_values: vec![Some([0.0, 0.0, 0.01, 1.0].into())],
+                    clear_values: vec![None, None], //vec![
+                        //Some([0.0, 0.0, 0.01, 1.0].into()),
+                        //Some(vulkano::format::ClearValue::DepthStencil((1.0, 0)))
+                    //],
                     ..RenderPassBeginInfo::framebuffer(
                         self.framebuffers[image_index as usize].clone()
                     )
@@ -423,7 +431,7 @@ impl GraphicsContext {
                 min_image_count: surface_caps.min_image_count.max(2),
                 image_format,
                 image_extent: window.inner_size().into(),
-                image_usage: ImageUsage::COLOR_ATTACHMENT,
+                image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST,
                 composite_alpha: surface_caps
                     .supported_composite_alpha
                     .into_iter()
@@ -442,8 +450,8 @@ impl GraphicsContext {
             0.01,
             100.0
         );
-        camera_controller.set_position([-15.0, 0.0, 0.0]);
-        camera_controller.look_to([-1.0, 0.0, 0.0]);
+        camera_controller.set_position([-35.0, 10.0, 0.0]);
+        camera_controller.look_to([-1.0, 0.25, 0.0]);
 
         let boid_iter = BoidIter::new(NUM_BOIDS);
 
@@ -507,13 +515,19 @@ impl GraphicsContext {
                 color: {
                     format: swapchain.image_format(),
                     samples: 1,
-                    load_op: Clear,
+                    load_op: Load,
                     store_op: Store,
                 },
+                depth: {
+                    format: vulkano::format::Format::D32_SFLOAT_S8_UINT,
+                    samples: 1,
+                    load_op: Load,
+                    store_op: Store,
+                }
             },
             pass: {
                 color: [color],
-                depth_stencil: {}
+                depth_stencil: {depth}
             },
         ).context("Failed to create render pass")?;
 
@@ -522,16 +536,77 @@ impl GraphicsContext {
             .map(|image| {
                 let view = ImageView::new_default(image.clone())
                     .context("Failed to create image view for framebuffer")?;
+                let depth_view = ImageView::new_default(
+                    Image::new(
+                        memory_allocator.clone(),
+                        ImageCreateInfo {
+                            image_type: ImageType::Dim2d,
+                            format: vulkano::format::Format::D32_SFLOAT_S8_UINT,
+                            extent: image.extent(),
+                            usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT | ImageUsage::TRANSFER_DST,
+                            ..Default::default()
+                        },
+                        AllocationCreateInfo {
+                            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                            ..Default::default()
+                        },
+                    ).context("Failed to create depth stencil image")?
+                ).context("Failed to create depth stencil image view for framebuffers")?;
+
                 Framebuffer::new(
                     render_pass.clone(),
                     FramebufferCreateInfo {
-                        attachments: vec![view],
+                        attachments: vec![view, depth_view],
                         ..Default::default()
                     }
                 ).context("Failed to create framebuffer")
             })
             .collect::<Result<Vec<_>>>()
             .context("Failed to create framebuffers")?;
+
+        let command_buffer_allocator = Arc::new(
+            vulkano::command_buffer::allocator::StandardCommandBufferAllocator::new(
+                device.clone(),
+                Default::default(),
+            ),
+        );
+
+        //Tell the GPU to fucking set those depth buffers to 1.0
+
+        {
+            let mut init_builder = AutoCommandBufferBuilder::primary(
+                command_buffer_allocator.clone(),
+                graphics_queue.queue_family_index(),
+                command_buffer::CommandBufferUsage::OneTimeSubmit,
+            ).context("Failed to create initialization command buffer builder")?;
+
+            for fb in &framebuffers {
+                init_builder
+                   .clear_depth_stencil_image(ClearDepthStencilImageInfo {
+                    clear_value: ClearDepthStencilValue {
+                        depth: 1.0,
+                        stencil: 0,
+                    },
+                    ..ClearDepthStencilImageInfo::image(fb.attachments().get(1).context("This should not happen")?.image().clone())
+                   })
+                   .context("Failed to record depth buffer clear command")?
+                   .clear_color_image(ClearColorImageInfo {
+                    clear_value: [0.5, 0.0, 0.01, 1.0].into(),
+                    ..ClearColorImageInfo::image(fb.attachments().get(0).context("This should not happen")?.image().clone())
+                   })
+                   .context("Failed to record color buffer clear command")?;
+            }
+
+            let init_command_buffer = init_builder.build().context("Failed to build initialization command buffer")?;
+
+            let init_future = now(device.clone())
+                .then_execute(graphics_queue.clone(), init_command_buffer)
+                .context("Failed to execute initialization command buffer")?
+                .then_signal_fence_and_flush()
+                .context("Failed to signal fence and flush for initialization")?;
+
+            init_future.wait(None).context("Failed to wait for depth buffer initialization")?;
+        }
 
 
         let graphics_pipeline = {
@@ -590,6 +665,10 @@ impl GraphicsContext {
                     subpass.num_color_attachments(),
                     ColorBlendAttachmentState::default(),
                 )),
+                depth_stencil_state: Some(DepthStencilState {
+                    depth: Some(DepthState::simple()),
+                    ..Default::default()
+                }),
                 subpass: Some(subpass.into()),
                 ..GraphicsPipelineCreateInfo::layout(layout)
 
@@ -609,12 +688,7 @@ impl GraphicsContext {
             ),
         );
 
-        let command_buffer_allocator = Arc::new(
-            vulkano::command_buffer::allocator::StandardCommandBufferAllocator::new(
-                device.clone(),
-                Default::default(),
-            ),
-        );
+
 
         Ok(Self {
             instance,
@@ -684,7 +758,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(graphics_context) = &mut self.graphics_context {
-                    let delta_time = 0.016; // Placeholder for ~60 FPS
+                    let delta_time = 0.005; // Placeholder for ~60 FPS
 
                     if let Err(e) = graphics_context.update(delta_time) {
                         self.error = Some(e);

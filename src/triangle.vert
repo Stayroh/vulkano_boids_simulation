@@ -19,12 +19,13 @@ layout(set = 0, binding = 1) uniform Camera {
 } camera;
 
 // ===== Outputs =====
-layout(location = 0) out vec2 v_uv;
+layout(location = 0) out vec3 barycentric;
 
-const vec2 UV[3] = vec2[](
-    vec2(-1.0, -1.0),
-    vec2( 1.0, -1.0),
-    vec2( 0.0,  1.0)
+
+const vec3 bary[3] = vec3[](
+    vec3(1.0, 0.0, 0.0),
+    vec3(0.0, 1.0, 0.0),
+    vec3(0.0, 0.0, 1.0)
 );
 
 
@@ -34,22 +35,24 @@ const vec2 UV[3] = vec2[](
 void main() {
     Boid b = boids[gl_InstanceIndex];
 
-    float size = 0.05; // tweak for triangle scale
+    float size = 0.4; // tweak for triangle scale
     float scale = 0.125;
-    vec2 local = UV[gl_VertexIndex];
+    vec3 local = bary[gl_VertexIndex];
 
 
+    // Equilateral triangle centered at origin, side length = 1
+    float h = sqrt(3.0) / 2.0; // height of equilateral triangle with side 1
     vec2 pos[3] = vec2[](
-        vec2(-0.3, -0.5),
-        vec2( 0.3, -0.5),
-        vec2( 0.0,  0.5)
+        vec2(-0.5, h/3.0),
+        vec2( 0.5, h/3.0),
+        vec2( 0.0, -2.0*h/3.0)
     );
 
     
 
     gl_Position = camera.proj * camera.view * vec4(b.position, 1.0) + vec4(pos[gl_VertexIndex], 0.0, 0.0) * size;
 
-    v_uv = local; // pass UV offsets to fragment shader
+    barycentric = local; // pass UV offsets to fragment shader
     
 
     /*
