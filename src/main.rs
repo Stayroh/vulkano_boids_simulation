@@ -95,7 +95,7 @@ struct ComputePushConstants {
 
 
 
-const NUM_BOIDS: usize = 50_000;
+const NUM_BOIDS: usize = 100_000;
 
 struct BoidIter {
     remaining: usize,
@@ -168,7 +168,6 @@ struct GraphicsContext {
     camera_buffer: Subbuffer<CameraState>,
     graphics_pipeline: Arc<GraphicsPipeline>,
     framebuffers: Vec<Arc<Framebuffer>>,
-    recreate_swapchain: bool,
 }
 
 impl GraphicsContext {
@@ -191,12 +190,12 @@ impl GraphicsContext {
 
         let push_constants = ComputePushConstants {
             delta_time,
-            radius_squared: 1.5,
-            separation_scale: 0.05,
-            alignment_scale: 5.0,
+            radius_squared: 2.0,
+            separation_scale: 0.01,
+            alignment_scale: 1.0,
             cohesion_scale: 20.0,
             max_speed: 500.0,
-            center_pull: 0.5,
+            center_pull: 0.1,
             num_elements: NUM_BOIDS as u32,
         };
 
@@ -264,10 +263,10 @@ impl GraphicsContext {
         graphics_builder
             .begin_render_pass(
                 RenderPassBeginInfo {
-                    clear_values: vec![
-                        Some([0.0, 0.0, 0.01, 1.0].into()),
-                        Some(vulkano::format::ClearValue::DepthStencil((1.0, 0)))
-                    ],
+                    clear_values: vec![None, None],//vec![
+                        //Some([0.0, 0.0, 0.01, 1.0].into()),
+                        //Some(vulkano::format::ClearValue::DepthStencil((1.0, 0)))
+                    //],
                     ..RenderPassBeginInfo::framebuffer(
                         self.framebuffers[image_index as usize].clone()
                     )
@@ -447,7 +446,7 @@ impl GraphicsContext {
 
         let mut camera_controller = CameraController::new(
             70.0_f32.to_radians(),
-            1.0,
+            16.0 / 9.0,
             0.01,
             100.0
         );
@@ -516,14 +515,14 @@ impl GraphicsContext {
                 color: {
                     format: swapchain.image_format(),
                     samples: 1,
-                    load_op: Clear,
+                    load_op: Load,
                     store_op: Store,
                 },
                 depth: {
                     format: vulkano::format::Format::D32_SFLOAT_S8_UINT,
                     samples: 1,
-                    load_op: Clear,
-                    store_op: DontCare,
+                    load_op: Load,
+                    store_op: Store,
                 }
             },
             pass: {
