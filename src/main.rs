@@ -95,7 +95,7 @@ struct ComputePushConstants {
 
 
 
-const NUM_BOIDS: usize = 100_000;
+const NUM_BOIDS: usize = 50_000;
 
 struct BoidIter {
     remaining: usize,
@@ -263,10 +263,10 @@ impl GraphicsContext {
         graphics_builder
             .begin_render_pass(
                 RenderPassBeginInfo {
-                    clear_values: vec![None, None],//vec![
-                        //Some([0.0, 0.0, 0.01, 1.0].into()),
-                        //Some(vulkano::format::ClearValue::DepthStencil((1.0, 0)))
-                    //],
+                    clear_values: vec![
+                        Some([0.0, 0.0, 0.01, 1.0].into()),
+                        Some(vulkano::format::ClearValue::DepthStencil((1.0, 0)))
+                    ],
                     ..RenderPassBeginInfo::framebuffer(
                         self.framebuffers[image_index as usize].clone()
                     )
@@ -515,14 +515,14 @@ impl GraphicsContext {
                 color: {
                     format: swapchain.image_format(),
                     samples: 1,
-                    load_op: Load,
+                    load_op: Clear,
                     store_op: Store,
                 },
                 depth: {
                     format: vulkano::format::Format::D32_SFLOAT_S8_UINT,
                     samples: 1,
-                    load_op: Load,
-                    store_op: Store,
+                    load_op: Clear,
+                    store_op: DontCare,
                 }
             },
             pass: {

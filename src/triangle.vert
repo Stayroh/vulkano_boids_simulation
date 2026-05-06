@@ -16,10 +16,12 @@ layout(set = 0, binding = 1) uniform Camera {
     mat4 proj;
     vec3 right;
     vec3 up;
+    vec3 pos;
 } camera;
 
 // ===== Outputs =====
 layout(location = 0) out vec3 barycentric;
+layout(location = 1) flat out int instanceId;
 
 
 const vec3 bary[3] = vec3[](
@@ -43,17 +45,26 @@ void main() {
     // Equilateral triangle centered at origin, side length = 1
     float h = sqrt(3.0) / 2.0; // height of equilateral triangle with side 1
     vec2 pos[3] = vec2[](
-        vec2(-0.5, h/3.0),
-        vec2( 0.5, h/3.0),
-        vec2( 0.0, -2.0*h/3.0)
+        vec2(-0.2, -1.0),
+        vec2( 0.2, -1.0),
+        vec2( 0.0, 0.0)
     );
 
     
+    if (length(b.velocity) != 0) {
+        vec3 cam_plane_x = normalize(b.velocity);
+        vec3 cam_plane_y = normalize(cross(cam_plane_x, camera.pos - b.position));
 
-    gl_Position = camera.proj * camera.view * vec4(b.position, 1.0) + vec4(pos[gl_VertexIndex], 0.0, 0.0) * size;
-
-    barycentric = local; // pass UV offsets to fragment shader
+        vec2 trianle_point = pos[gl_VertexIndex];
+        vec3 world_pos = trianle_point.x * cam_plane_y + trianle_point.y * cam_plane_x + b.position;
+        gl_Position = camera.proj * camera.view * vec4(world_pos, 1.0);
+    } else {
+        gl_Position = camera.proj * camera.view * vec4(b.position, 1.0);
+    }
     
+    
+    barycentric = local; // pass UV offsets to fragment shader
+    instanceId = gl_InstanceIndex;
 
     /*
     vec2 screen_pos = vec2(b.position);

@@ -10,6 +10,7 @@ struct Boid {
 layout(std430, set = 0, binding = 0) buffer Boids {
     Boid boids[];
 };
+
 layout(push_constant) uniform PushConstants {
     float deltaTime;
     float radius_squared;

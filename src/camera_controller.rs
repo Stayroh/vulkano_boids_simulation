@@ -8,6 +8,7 @@ pub struct CameraState {
     pub proj: [[f32; 4]; 4],
     pub right: [f32; 3],
     pub up: [f32; 3],
+    pub pos: [f32; 3],
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +69,7 @@ impl CameraController {
             proj: self.compute_projection_matrix(),
             right: self.right,
             up: self.up,
+            pos: self.position,
         }
     }
 
