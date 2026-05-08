@@ -26,6 +26,7 @@ use camera_controller::{CameraController, CameraState};
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use rand::Rng;
+use vulkano::{Validated, VulkanError};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, ClearColorImageInfo, ClearDepthStencilImageInfo, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents};
 use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::format::ClearDepthStencilValue;
@@ -35,15 +36,16 @@ use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorB
 use vulkano::pipeline::graphics::depth_stencil::{DepthState, DepthStencilState};
 use vulkano::pipeline::graphics::vertex_input::VertexInputState;
 use vulkano::pipeline::layout::PipelineLayoutCreateInfo;
-use vulkano::pipeline::{PipelineBindPoint, PipelineCreateFlags, PipelineLayout};
+use vulkano::pipeline::{DynamicState, PipelineBindPoint, PipelineCreateFlags, PipelineLayout};
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::{CullMode, RasterizationState};
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, Subpass};
+use vulkano::render_pass::{self, Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
 use vulkano::swapchain::{self, SwapchainPresentInfo};
-use std::default;
+use std::collections::HashSet;
+use std::{default, result};
 use std::sync::Arc;
 use vulkano::sync::{GpuFuture, now};
 use vulkano::{
@@ -168,6 +170,46 @@ struct GraphicsContext {
     camera_buffer: Subbuffer<CameraState>,
     graphics_pipeline: Arc<GraphicsPipeline>,
     framebuffers: Vec<Arc<Framebuffer>>,
+    recreate_swapchain: bool,
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    render_pass: Arc<RenderPass>,
+    viewport: Viewport
+}
+
+
+
+fn create_framebuffers(swapchain_images: &Vec<Arc<Image>>, memory_allocator: Arc<StandardMemoryAllocator>, render_pass: Arc<RenderPass>) -> Result<Vec<Arc<Framebuffer>>> {
+    swapchain_images
+            .iter()
+            .map(|image| {
+                let view = ImageView::new_default(image.clone())
+                    .context("Failed to create image view for framebuffer")?;
+                let depth_view = ImageView::new_default(
+                    Image::new(
+                        memory_allocator.clone(),
+                        ImageCreateInfo {
+                            image_type: ImageType::Dim2d,
+                            format: vulkano::format::Format::D32_SFLOAT_S8_UINT,
+                            extent: image.extent(),
+                            usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT | ImageUsage::TRANSFER_DST,
+                            ..Default::default()
+                        },
+                        AllocationCreateInfo {
+                            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                            ..Default::default()
+                        },
+                    ).context("Failed to create depth stencil image")?
+                ).context("Failed to create depth stencil image view for framebuffers")?;
+
+                Framebuffer::new(
+                    render_pass.clone(),
+                    FramebufferCreateInfo {
+                        attachments: vec![view, depth_view],
+                        ..Default::default()
+                    }
+                ).context("Failed to create framebuffer")
+            })
+            .collect::<Result<Vec<_>>>()
 }
 
 impl GraphicsContext {
@@ -229,16 +271,51 @@ impl GraphicsContext {
 
         compute_future.wait(None).context("Failed to wait for compute shader execution")?;
 
+        if self.recreate_swapchain {
+            self.recreate_swapchain = false;
+
+            let new_extent: [u32; 2] = self.window.inner_size().into();
+
+            if new_extent[0] == 0 || new_extent[1] == 0 {
+                return Ok(());
+            }
+
+            self.camera_controller.set_aspect_ratio(new_extent[0] as f32 / new_extent[1] as f32);
+            let (new_swapchain, new_images) = self.swapchain.recreate(SwapchainCreateInfo {
+                image_extent: new_extent,
+                ..self.swapchain.create_info()
+            }).context("Failed to recreate swapchain")?;
+
+            self.swapchain = new_swapchain;
+            self.framebuffers = create_framebuffers(&new_images, self.memory_allocator.clone(), self.render_pass.clone())?;
+
+
+            self.viewport = Viewport {
+                offset: [0.0, 0.0],
+                extent: [new_extent[0] as f32, new_extent[1] as f32],
+                depth_range: 0.0..=1.0,
+            };
+        }
+
+        let (image_index, suboptimal, acquire_future) =
+            match swapchain::acquire_next_image(self.swapchain.clone(), None) {
+                Ok(result) => result,
+                Err(Validated::Error(VulkanError::OutOfDate)) => {
+                    self.recreate_swapchain = true;
+                    return Ok(());
+                }
+                Err(e) => Err(e).context("Failed to acquire next image")?,
+            };
+
+        if suboptimal {
+            self.recreate_swapchain = true;
+        }
+            
         
-
-        let (image_index, _suboptimal, acquire_future) = swapchain::acquire_next_image(self.swapchain.clone(), None)
-            .context("Failed to acquire next swapchain image")?;
-
-        let dimensions = self.framebuffers[image_index as usize].attachments()[0].image().extent();
-
-        println!("Rendering to image {} with dimensions {:?}", image_index, dimensions);
-        let actual_window_size = self.window.inner_size();
-        println!("Window size: {:?}", actual_window_size);
+        {
+            let mut content = self.camera_buffer.write().context("Failed to write to camera buffer")?;
+            *content = self.camera_controller.get_state();
+        }
 
         
         let graphics_layout = self.graphics_pipeline.layout().set_layouts().get(0).context("No descriptor set layout found")?;
@@ -279,6 +356,8 @@ impl GraphicsContext {
             .context("Failed to begin render pass")?
             .bind_pipeline_graphics(self.graphics_pipeline.clone())
             .context("Failed to bind graphics pipeline")?
+            .set_viewport(0, [self.viewport.clone()].into_iter().collect())
+            .context("Failed to set viewport")?
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 self.graphics_pipeline.layout().clone(),
@@ -424,6 +503,8 @@ impl GraphicsContext {
 
         println!("Using surface format: {:?}", image_format);
 
+        let image_extent: [u32; 2] = window.inner_size().into();
+
         let (swapchain, swapchain_images) = Swapchain::new(
             device.clone(),
             surface.clone(),
@@ -444,9 +525,11 @@ impl GraphicsContext {
 
         println!("Created swapchain with {} images", swapchain_images.len());
 
+        let aspect_ratio = image_extent[0] as f32 / image_extent[1] as f32;
+
         let mut camera_controller = CameraController::new(
             70.0_f32.to_radians(),
-            16.0 / 9.0,
+            aspect_ratio,
             0.01,
             100.0
         );
@@ -531,37 +614,7 @@ impl GraphicsContext {
             },
         ).context("Failed to create render pass")?;
 
-        let framebuffers = swapchain_images
-            .iter()
-            .map(|image| {
-                let view = ImageView::new_default(image.clone())
-                    .context("Failed to create image view for framebuffer")?;
-                let depth_view = ImageView::new_default(
-                    Image::new(
-                        memory_allocator.clone(),
-                        ImageCreateInfo {
-                            image_type: ImageType::Dim2d,
-                            format: vulkano::format::Format::D32_SFLOAT_S8_UINT,
-                            extent: image.extent(),
-                            usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT | ImageUsage::TRANSFER_DST,
-                            ..Default::default()
-                        },
-                        AllocationCreateInfo {
-                            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                            ..Default::default()
-                        },
-                    ).context("Failed to create depth stencil image")?
-                ).context("Failed to create depth stencil image view for framebuffers")?;
-
-                Framebuffer::new(
-                    render_pass.clone(),
-                    FramebufferCreateInfo {
-                        attachments: vec![view, depth_view],
-                        ..Default::default()
-                    }
-                ).context("Failed to create framebuffer")
-            })
-            .collect::<Result<Vec<_>>>()
+        let framebuffers = create_framebuffers(&swapchain_images, memory_allocator.clone(), render_pass.clone())
             .context("Failed to create framebuffers")?;
 
         let command_buffer_allocator = Arc::new(
@@ -608,6 +661,13 @@ impl GraphicsContext {
             init_future.wait(None).context("Failed to wait for depth buffer initialization")?;
         }
 
+        let dimensions = framebuffers[0].attachments()[0].image().extent();
+
+        let viewport = Viewport {
+                offset: [0.0, 0.0],
+                extent: [dimensions[0] as f32, dimensions[1] as f32],
+                depth_range: 0.0..=1.0,
+            };
 
         let graphics_pipeline = {
             
@@ -638,13 +698,7 @@ impl GraphicsContext {
 
             let subpass = Subpass::from(render_pass.clone(), 0).context("Failed to crete subpass")?;
             
-            let dimensions = framebuffers[0].attachments()[0].image().extent();
-
-            let viewport = Viewport {
-                    offset: [0.0, 0.0],
-                    extent: [dimensions[0] as f32, dimensions[1] as f32],
-                    depth_range: 0.0..=1.0,
-                };
+            
 
             let graphics_pipeline_create_info = GraphicsPipelineCreateInfo {
                 flags: PipelineCreateFlags::empty(),
@@ -652,8 +706,9 @@ impl GraphicsContext {
                 vertex_input_state: Some(VertexInputState::default()),
                 input_assembly_state: Some(InputAssemblyState::default()),
                 tessellation_state: None,
+                dynamic_state: [DynamicState::Viewport].into_iter().collect(),
                 viewport_state: Some(ViewportState {
-                    viewports: [viewport].into_iter().collect(),
+                    viewports: [viewport.clone()].into_iter().collect(),
                     ..Default::default()
                 }),
                 rasterization_state: Some(RasterizationState {
@@ -706,7 +761,11 @@ impl GraphicsContext {
             camera_controller,
             camera_buffer,
             graphics_pipeline,
-            framebuffers
+            framebuffers,
+            recreate_swapchain: false,
+            memory_allocator,
+            render_pass,
+            viewport
         })
     }
 }
@@ -752,6 +811,11 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         match event {
+            WindowEvent::Resized(_) => {
+                if let Some(a) = &mut self.graphics_context {
+                    a.recreate_swapchain = true;
+                }
+            }
             WindowEvent::CloseRequested => {
                 println!("Window close requested, exiting application.");
                 event_loop.exit();

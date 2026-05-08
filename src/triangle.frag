@@ -19,5 +19,5 @@ layout(location = 0) out vec4 f_color;
 
 void main() {
     Boid b = boids[instanceId];
-    f_color = vec4(b.velocity, 1.0);
+    f_color = vec4(vec3(length(b.velocity)/100.0), 1.0);
 }
