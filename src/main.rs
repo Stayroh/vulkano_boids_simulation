@@ -20,6 +20,13 @@ mod cs {
     }
 }
 
+mod ts {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "src/temporal.comp"
+    }
+}
+
 mod camera_controller;
 use camera_controller::{CameraController, CameraState};
 
@@ -29,7 +36,7 @@ use rand::Rng;
 use vulkano::{Validated, VulkanError};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, ClearColorImageInfo, ClearDepthStencilImageInfo, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents};
 use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
-use vulkano::format::ClearDepthStencilValue;
+use vulkano::format::{ClearDepthStencilValue, FormatFeatures};
 use vulkano::image::{ImageCreateInfo, ImageType};
 use vulkano::image::view::ImageView;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
@@ -98,6 +105,8 @@ struct ComputePushConstants {
 
 
 const NUM_BOIDS: usize = 50_000;
+const SPAWN_CUBE_SIZE: f32 = 5.0;
+const INITIAL_VELOCITY_SCALE: f32 = 0.0;
 
 struct BoidIter {
     remaining: usize,
@@ -123,16 +132,16 @@ impl Iterator for BoidIter {
         self.remaining -= 1;
 
         // Random position in unit cube
-        let position = [rand::random(), rand::random(), rand::random()];
+        let position = [self.rng.random_range(-1.0..1.0) * SPAWN_CUBE_SIZE / 2.0, self.rng.random_range(-1.0..1.0) * SPAWN_CUBE_SIZE / 2.0, self.rng.random_range(-1.0..1.0) * SPAWN_CUBE_SIZE / 2.0];
 
         // Random velocity inside unit sphere
         let velocity = loop {
             let v = [
-                self.rng.random_range(-1.0..1.0),
-                self.rng.random_range(-1.0..1.0),
-                self.rng.random_range(-1.0..1.0),
+                self.rng.random_range(-1.0..1.0) * INITIAL_VELOCITY_SCALE,
+                self.rng.random_range(-1.0..1.0) * INITIAL_VELOCITY_SCALE,
+                self.rng.random_range(-1.0..1.0) * INITIAL_VELOCITY_SCALE,
             ];
-            if v.iter().map(|x| x * x).sum::<f32>() <= 1.0 {
+            if v.iter().map(|x| x * x).sum::<f32>() <= INITIAL_VELOCITY_SCALE * INITIAL_VELOCITY_SCALE {
                 break v;
             }
         };
@@ -173,7 +182,8 @@ struct GraphicsContext {
     recreate_swapchain: bool,
     memory_allocator: Arc<StandardMemoryAllocator>,
     render_pass: Arc<RenderPass>,
-    viewport: Viewport
+    viewport: Viewport,
+    temporal_compute_pipeline: Arc<ComputePipeline>
 }
 
 
@@ -233,11 +243,11 @@ impl GraphicsContext {
         let push_constants = ComputePushConstants {
             delta_time,
             radius_squared: 2.0,
-            separation_scale: 0.01,
+            separation_scale: 0.5,
             alignment_scale: 1.0,
-            cohesion_scale: 20.0,
+            cohesion_scale: 0.5,
             max_speed: 500.0,
-            center_pull: 0.1,
+            center_pull: 0.05,
             num_elements: NUM_BOIDS as u32,
         };
 
@@ -307,6 +317,8 @@ impl GraphicsContext {
                 Err(e) => Err(e).context("Failed to acquire next image")?,
             };
 
+        
+
         if suboptimal {
             self.recreate_swapchain = true;
         }
@@ -316,6 +328,65 @@ impl GraphicsContext {
             let mut content = self.camera_buffer.write().context("Failed to write to camera buffer")?;
             *content = self.camera_controller.get_state();
         }
+
+
+
+
+        let temporal_compute_layout = self.temporal_compute_pipeline.layout().set_layouts().get(0).context("No descriptor set layout found")?;
+
+        let last_image_view = self.framebuffers[((image_index + 1) % 2) as usize].attachments()[0].clone();
+        let new_image_view = self.framebuffers[image_index as usize].attachments()[0].clone();
+
+        let dimensions = new_image_view.image().extent();
+
+        let temporal_compute_descriptor_set = vulkano::descriptor_set::DescriptorSet::new(
+            self.descriptor_set_allocator.clone(),
+            temporal_compute_layout.clone(),
+            [
+                vulkano::descriptor_set::WriteDescriptorSet::image_view(0, last_image_view),
+                vulkano::descriptor_set::WriteDescriptorSet::image_view(1, new_image_view)
+            ],
+            [],
+        ).context("Failed to create descriptor set")?;
+
+        let mut temporal_compute_builder = vulkano::command_buffer::AutoCommandBufferBuilder::primary(
+            self.command_buffer_allocator.clone(),
+            self.compute_queue.queue_family_index(),
+            vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
+        ).context("Failed to create command buffer builder")?;
+
+        temporal_compute_builder
+            .bind_pipeline_compute(self.temporal_compute_pipeline.clone())
+            .context("Failed to bind compute pipeline to command buffer")?
+            .bind_descriptor_sets(
+                vulkano::pipeline::PipelineBindPoint::Compute,
+                self.temporal_compute_pipeline.layout().clone(),
+                0,
+                temporal_compute_descriptor_set,
+            )
+            .context("Failed to bind descriptor set to command buffer")?;
+
+        unsafe {
+            temporal_compute_builder
+                .dispatch([dimensions[0], dimensions[1], 1])
+                .context("Failed to dispatch compute shader")?;
+        }
+
+        let temporal_compute_command_buffer = temporal_compute_builder.build().context("Failed to build command buffer")?;
+
+        
+        let temporal_compute_future = vulkano::sync::now(self.device.clone())
+            .then_execute(self.compute_queue.clone(), temporal_compute_command_buffer)
+            .context("Failed to execute command buffer")?
+            .then_signal_fence_and_flush()
+            .context("Failed to signal fence and flush")?;
+
+        temporal_compute_future.wait(None).context("Failed to wait for compute shader execution")?;
+
+
+
+
+
 
         
         let graphics_layout = self.graphics_pipeline.layout().set_layouts().get(0).context("No descriptor set layout found")?;
@@ -341,7 +412,7 @@ impl GraphicsContext {
             .begin_render_pass(
                 RenderPassBeginInfo {
                     clear_values: vec![
-                        Some([0.0, 0.0, 0.01, 1.0].into()),
+                        None,
                         Some(vulkano::format::ClearValue::DepthStencil((1.0, 0)))
                     ],
                     ..RenderPassBeginInfo::framebuffer(
@@ -494,13 +565,30 @@ impl GraphicsContext {
             .surface_capabilities(&surface, Default::default())
             .context("Failed to query surface capabilities")?;
 
-        let image_format = physical_device
-            .surface_formats(&surface, Default::default())
-            .context("Failed to query surface formats")?
-            .first()
-            .context("No surface formats available")?
-            .0;
 
+        let available_image_formats = physical_device
+            .surface_formats(&surface, Default::default())
+            .context("Failed to query surface formats")?;
+
+        for format in &available_image_formats {
+            dbg!(format);
+        }
+
+        /*
+        let image_format = available_image_formats
+            .into_iter()
+            .find(|(format, _)| {
+                physical_device
+                    .format_properties(*format)
+                    .map(|props| props.optimal_tiling_features.contains(FormatFeatures::COLOR_ATTACHMENT | FormatFeatures::TRANSFER_DST | FormatFeatures::TRANSFER_SRC | FormatFeatures::STORAGE_IMAGE))
+                    .unwrap_or(false)
+            })
+            .context("No fitting surface format was found")?
+            .0;
+            
+        */
+        let image_format = vulkano::format::Format::R16G16B16A16_SFLOAT;
+        
         println!("Using surface format: {:?}", image_format);
 
         let image_extent: [u32; 2] = window.inner_size().into();
@@ -512,7 +600,7 @@ impl GraphicsContext {
                 min_image_count: surface_caps.min_image_count.max(2),
                 image_format,
                 image_extent: window.inner_size().into(),
-                image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST,
+                image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC | ImageUsage::STORAGE,
                 composite_alpha: surface_caps
                     .supported_composite_alpha
                     .into_iter()
@@ -533,8 +621,8 @@ impl GraphicsContext {
             0.01,
             100.0
         );
-        camera_controller.set_position([-35.0, 10.0, 0.0]);
-        camera_controller.look_to([-1.0, 0.25, 0.0]);
+        camera_controller.set_position([-85.0, 10.0, 0.0]);
+        camera_controller.look_at([0.0, 0.0, 0.0]);
 
         let boid_iter = BoidIter::new(NUM_BOIDS);
 
@@ -592,13 +680,42 @@ impl GraphicsContext {
             .context("Failed to create compute pipeline")?
         };
 
+        let temporal_compute_pipeline = {
+            let ts_module = ts::load(device.clone()).context("Failed to load temporal compute shader")?;
+
+            let stage = PipelineShaderStageCreateInfo::new(
+                ts_module
+                    .entry_point("main")
+                    .context("Error in compute shader entry point")?,
+            );
+
+            let layout = PipelineLayout::new(
+                device.clone(),
+                PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+                    .into_pipeline_layout_create_info(device.clone())
+                    .context("Failed to create pipeline layout info")?,
+            )
+            .context("Failed to create pipeline layout")?;
+
+            ComputePipeline::new(
+                device.clone(),
+                None,
+                ComputePipelineCreateInfo::stage_layout(stage, layout)
+            )
+            .context("Failed to create temporal compute pipeline")?
+            
+        };
+
+
+    
+
         let render_pass = vulkano::single_pass_renderpass!(
             device.clone(),
             attachments: {
                 color: {
                     format: swapchain.image_format(),
                     samples: 1,
-                    load_op: Clear,
+                    load_op: Load,
                     store_op: Store,
                 },
                 depth: {
@@ -765,7 +882,8 @@ impl GraphicsContext {
             recreate_swapchain: false,
             memory_allocator,
             render_pass,
-            viewport
+            viewport,
+            temporal_compute_pipeline
         })
     }
 }

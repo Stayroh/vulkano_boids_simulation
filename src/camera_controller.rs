@@ -50,7 +50,8 @@ impl CameraController {
     }
 
     pub fn look_to(&mut self, direction: [f32; 3]) {
-        self.forward = Self::normalize(direction);
+        let helper = Self::normalize(direction);
+        self.forward = [-helper[0],-helper[1],-helper[2]];
         self.update_vectors();
     }
 
@@ -132,20 +133,3 @@ impl CameraController {
     }
 }
 
-// Example usage
-fn main() {
-    let mut camera = CameraController::new(
-        PI / 4.0,  // 45 degree FOV
-        16.0 / 9.0, // aspect ratio
-        0.1,        // near plane
-        100.0,      // far plane
-    );
-
-    camera.set_position([0.0, 5.0, 10.0]);
-    camera.look_at([0.0, 0.0, 0.0]);
-
-    let state = camera.get_state();
-    println!("Camera State:");
-    println!("Right: {:?}", state.right);
-    println!("Up: {:?}", state.up);
-}
