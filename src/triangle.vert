@@ -36,17 +36,16 @@ const vec3 bary[3] = vec3[](
 
 void main() {
     Boid b = boids[gl_InstanceIndex];
-
-    float size = 0.4; // tweak for triangle scale
-    float scale = 0.125;
+    float length_scale = 3.0;
+    float scale = 0.5;
     vec3 local = bary[gl_VertexIndex];
 
 
     // Equilateral triangle centered at origin, side length = 1
     float h = sqrt(3.0) / 2.0; // height of equilateral triangle with side 1
     vec2 pos[3] = vec2[](
-        vec2(-0.2, -1.0),
-        vec2( 0.2, -1.0),
+        vec2(-0.2, -1.0 * length_scale),
+        vec2( 0.2, -1.0 * length_scale),
         vec2( 0.0, 0.0)
     );
 
@@ -55,7 +54,7 @@ void main() {
         vec3 cam_plane_x = normalize(b.velocity);
         vec3 cam_plane_y = normalize(cross(cam_plane_x, camera.pos - b.position));
 
-        vec2 trianle_point = pos[gl_VertexIndex];
+        vec2 trianle_point = pos[gl_VertexIndex] * scale;
         vec3 world_pos = trianle_point.x * cam_plane_y + trianle_point.y * cam_plane_x + b.position;
         gl_Position = camera.proj * camera.view * vec4(world_pos, 1.0);
     } else {

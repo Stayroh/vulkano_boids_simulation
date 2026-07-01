@@ -39,7 +39,7 @@ use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::format::{ClearDepthStencilValue, FormatFeatures};
 use vulkano::image::{ImageCreateInfo, ImageType};
 use vulkano::image::view::ImageView;
-use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
+use vulkano::pipeline::graphics::color_blend::{AttachmentBlend, ColorBlendAttachmentState, ColorBlendState};
 use vulkano::pipeline::graphics::depth_stencil::{DepthState, DepthStencilState};
 use vulkano::pipeline::graphics::vertex_input::VertexInputState;
 use vulkano::pipeline::layout::PipelineLayoutCreateInfo;
@@ -99,14 +99,17 @@ struct ComputePushConstants {
     max_speed: f32,
     center_pull: f32,
     num_elements: u32,
+    region_size: f32,
+    target_speed: f32,
+    speed_damping: f32,
 }
 
 
 
 
 const NUM_BOIDS: usize = 50_000;
-const SPAWN_CUBE_SIZE: f32 = 5.0;
-const INITIAL_VELOCITY_SCALE: f32 = 0.0;
+const SPAWN_CUBE_SIZE: f32 = 50.0;
+const INITIAL_VELOCITY_SCALE: f32 = 2.0;
 
 struct BoidIter {
     remaining: usize,
@@ -242,13 +245,16 @@ impl GraphicsContext {
 
         let push_constants = ComputePushConstants {
             delta_time,
-            radius_squared: 2.0,
-            separation_scale: 0.5,
-            alignment_scale: 1.0,
-            cohesion_scale: 0.5,
-            max_speed: 500.0,
-            center_pull: 0.05,
+            radius_squared: 8.0,
+            separation_scale: 6.0,
+            alignment_scale: 7.0,
+            cohesion_scale: 3.0,
+            max_speed: 1000.0,
+            center_pull: 3.0,
             num_elements: NUM_BOIDS as u32,
+            region_size: 4000.0,
+            target_speed: 150.0,
+            speed_damping: 0.1,
         };
 
         compute_builder
@@ -618,10 +624,10 @@ impl GraphicsContext {
         let mut camera_controller = CameraController::new(
             70.0_f32.to_radians(),
             aspect_ratio,
-            0.01,
-            100.0
+            0.1,
+            400.0
         );
-        camera_controller.set_position([-85.0, 10.0, 0.0]);
+        camera_controller.set_position([-125.0, 30.0, 0.0]);
         camera_controller.look_at([0.0, 0.0, 0.0]);
 
         let boid_iter = BoidIter::new(NUM_BOIDS);
@@ -835,7 +841,10 @@ impl GraphicsContext {
                 multisample_state: Some(MultisampleState::default()),
                 color_blend_state: Some(ColorBlendState::with_attachment_states(
                     subpass.num_color_attachments(),
-                    ColorBlendAttachmentState::default(),
+                    ColorBlendAttachmentState {
+                        blend: Some(AttachmentBlend::additive()),
+                        ..Default::default()
+                    },
                 )),
                 depth_stencil_state: Some(DepthStencilState {
                     depth: Some(DepthState::simple()),

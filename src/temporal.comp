@@ -8,7 +8,7 @@ layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 void main() {
     vec4 last = imageLoad(last_image, ivec2(gl_GlobalInvocationID.xy));
     vec4 new = imageLoad(new_image, ivec2(gl_GlobalInvocationID.xy));
-    float t = 0.9;
-    vec4 blend = last * t + new * (1.0 - t);
+    float t = 0.6;
+    vec4 blend = last * 0.92;
     imageStore(new_image, ivec2(gl_GlobalInvocationID), blend);
 }

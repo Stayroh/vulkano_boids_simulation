@@ -20,6 +20,9 @@ layout(push_constant) uniform PushConstants {
     float maxSpeed;
     float center_pull;
     uint num_elements;
+    float region_size;
+    float target_speed;
+    float speed_damping;
 } pc;
 
 
@@ -60,14 +63,20 @@ void main() {
 
     vec3 center_pull = -boid.position;// * length(boid.position);
 
+    vec3 speed_goal_force = normalize(boid.velocity) * (pc.target_speed - length(boid.velocity)) * pc.speed_damping;
 
-
-    vec3 total_force = separation * pc.separation_scale + alignment * pc.alignment_scale + cohesion * pc.cohesion_scale + center_pull * pc.center_pull;
+    vec3 total_force = separation * pc.separation_scale + alignment * pc.alignment_scale + cohesion * pc.cohesion_scale + center_pull * pc.center_pull + speed_goal_force;
 
     vec3 new_velocity = boid.velocity + total_force * pc.deltaTime;
     float speed = length(new_velocity);
     if (speed > pc.maxSpeed) new_velocity = normalize(new_velocity) * pc.maxSpeed;
     vec3 new_position = boid.position + new_velocity * pc.deltaTime;
+
+
+
+
+    vec3 pos_in_region_space = (new_position - vec3(-pc.region_size / 2.0)) / pc.region_size;
+    new_position = vec3(mod(pos_in_region_space.x, 1.0), mod(pos_in_region_space.y, 1.0), mod(pos_in_region_space.z, 1.0)) * pc.region_size + vec3(-pc.region_size / 2.0);
 
 
 
